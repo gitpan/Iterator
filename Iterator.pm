@@ -1,965 +1,817 @@
+=for gpg
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA1
 
-	package Data::Iterator;
-	require 5.000;
+=head1 NAME
 
-	use strict;
-	use Carp;
-	use FileHandle;
-	use vars qw($VERSION);
+Iterator - A general-purpose iterator class.
 
-	$VERSION = 0.02;
+=head1 VERSION
 
-	local $[ 	= 0;
-
-	my %_cfg		= ('_set_'		=>  {'-Nodes'		=> 0,		# show nodes as normal items
-										 '-DigLevel'	=> undef,	# dig down to this level
-					   					 '-DigFiles'	=> 1,		# show file's content if value is in '-FILE:...'-format
-					   					 '-DigGlobs'	=> 1,		# resolve glob references
-					   					 '-DigSRefs'	=> 1,		# resolve scalar references
-					   					 '-DigCode'		=> 1,		# execute coderefs, capture output
-					   					 '-Files'		=> 1,		# allow for '-File:...' root objects
-					   					 '-Code'		=> 1,		# allow for coderef root objects
-					   					 '-SRefs'		=> 1		# resolve scalarref root objects
-										},
-					   '_known_refs_'=> [ {qw(ARRAY 1 CODE 1 GLOB 1 HASH 1 SCALAR 1 REF 0 FileHandle 1 VFILE 1 VCODE 0)},
-					   					  {qw(ARRAY 1 CODE 1 GLOB 1 HASH 1 SCALAR 1 REF 0 FileHandle 1 VFILE 1 VCODE 0)} ],
-					   '_init_'		=> sub {my $me = shift;
-					   						@{$me->{'_known_refs_'}[0]}{'VFILE', 'GLOB', 'CODE', 'SCALAR'} = @{$me->{'_set_'}}{'-Files', '-Globs', '-Code', '-SRefs'};
-					   						@{$me->{'_known_refs_'}[1]}{'VFILE', 'GLOB', 'CODE', 'SCALAR'} = @{$me->{'_set_'}}{'-DigFiles', '-DigGlobs', '-DigCode', '-DigSRefs'};
-					   					   }
-					  );
-	my %br			= ('HR'	=> [('{\'', '\'}')],
-					   'AR'	=> [('[', ']')],
-					   'SR'	=> [('','')],
-					   'GR' => [('[',']')],
-					   'FH'	=> [('[',']')],
-					   'SV'	=> [('','')],
-					   'VF'	=> [('<','>')],
-					   '0'	=> [('','')]);
-	my %init =	('ARRAY'	=> sub {return $_[0], scalar @{$_[0]}, -1, 'ARRAY', @{$br{'AR'}}, $_[0];},
-				 'CODE'		=> sub {my (@e, @r);
-				 					eval {local $SIG{__DIE__}	= sub { chomp @_;push @e, 'FATAL: '.join ('', @_);
-																		if (scalar (caller(0)) eq 'Carp') {
-																			my $loc = sprintf (" at %s line %s", (caller(1))[1,2]);
-																			$e[-1] =~ s/( at .*?)$/$loc/;
-																		}
-																	  	die};
-		 								  local $SIG{__WARN__}	= sub {chomp @_;push @e, 'WARN : '.join ('', @_);
-																		if (scalar (caller(0)) eq 'Carp') {
-																			my $loc = sprintf (" at %s line %s", (caller(1))[1,2]);
-																			$e[-1] =~ s/( at .*?)$/$loc/;
-																		}
-																	   };
-										  @r = $_[0]->();
-										 };
-									unshift @r, {('_ERR_' => \@e)};
-					 				return \@r, scalar @r, -1, 'ARRAY', @{$br{'AR'}}, $_[0];
-								   },
-				 'GLOB'		=> sub {return $_[0], undef, -1, 'GLOB', @{$br{'GR'}}, $_[0];},
-				 'HASH'		=> sub {my @k = keys %{$_[0]};
-				 					return $_[0], \@k, scalar @k, -1, 'HASH', @{$br{'HR'}}, $_[0];},
-				 'SCALAR'	=> sub {return $_[0], 1, -1, 'SCALAR', @{$br{'SR'}}, $_[0];},
-				 'VFILE'	=> sub {my ($file) = $_[0] =~ /^-FILE:(.+)/;
-									my $fh = new FileHandle ("< $file");
-									carp ("Iterator::init failed on opening file:\n\t'$file': $!") && return undef unless $fh;
-									return $fh, undef, -1, 'FileHandle', @{$br{'FH'}}, $_[0];
-									},
-				 'VCODE'	=> sub {},
-				 'undef'	=> sub {return \$_[0], 1, -1, 'undef', @{$br{'SV'}}, \$_[0];},
-				);
-	my %elem = 	('ARRAY'	=> sub {return  (++$_[0]->[2] < $_[0]->[1]				 ?
-				 								($_[0]->[2], \$_[0]->[0][$_[0]->[2]]):
-				 								())
-				 				   },
-				 'CODE'		=> sub {return undef},
-				 'FileHandle'=> sub {my $fh = $_[0]->[0];
-					 				 return $fh->eof ? ()
-					 				 				 : ($fh->input_line_number+1, \scalar <$fh>);
-					 			   },
-				 'GLOB' 	=> sub {my $fh = ${$_[0]->[0]};
-									return eof ($fh) ? ()
-												     : do {my $l = <$fh>;($., \$l)}
-								   },
-				 'HASH'		=> sub {return ++$_[0]->[3] < $_[0]->[2] ?
-  				 									  ($_[0]->[1][$_[0]->[3]], \$_[0]->[0]{$_[0]->[1][$_[0]->[3]]})
- 				 									 : ()
-				 				   },
-				 'SCALAR'	=> sub {return ++$_[0]->[2] < $_[0]->[1] ? ('', $_[0]->[0]) : ()
-				 				   },
-# 				 'VFILE'	=> sub {return ++$_[0]->[2] < $_[0]->[1] ? '' : undef, \$_[0]->[0]
-# 				 				   },
-				 'undef'	=> sub {return ++$_[0]->[2] < $_[0]->[1] ? ('', $_[0]->[0]) : ()
-				 				   }
-				);
-
-
-	sub new {
-		my $class		= shift;
-		my $me			= {};
-		$me->{'_source'}= defined $_[0] ? shift : do{carp "Iterator::new: No valid source specified";return};
-		bless $me, $class;
-		$me->{'stack'}	= [];
-		$me->{'level'}	= 0;
-
-		$me->{'_cfg'}						=  { %_cfg };
-		$me->{'_cfg'}{'_known_refs_'}[0]	=  { %{$_cfg{'_known_refs_'}[0]} };
-		$me->{'_cfg'}{'_known_refs_'}[1]	=  { %{$_cfg{'_known_refs_'}[1]} };
-		$me->{'_cfg'}{'_set_'}				=  { %{$_cfg{'_set_'}} };
-
- 		my $item = $me->{'_source'};
-		my %seen;
-		while ($me->_ref_ex($item,0) eq 'SCALAR'){
-			$seen{$item}	= 1;
-			$item			= ${$item};
-			last if (exists $seen{$item});
-		};
-		$me->{'root'}		= [ $me->_init ($item, 0), '' ];
-		$me->{'_type'}		= ${$me->{'root'}}[-5];
-
-		return undef unless defined $me->{'root'}[0];
-
- 		$me->{'stack'}		= $me->{'root_context'}{'item'} = [ [@{$me->{'root'}}] ];
- 		my $vp = $me->{'root'}[-2];chomp $vp;
- 		$me->{'_seen'}{$vp}	= $me->{'root_context'}{'seen'}{$vp}	= 'ROOT OBJECT';#{};
-
-		$me->{'contexts'}	= {};
-		$me->{'err'}		= undef;
-
-		return $me;
-	}
-
-
-	# setzt/liefert Objekt-Config: 	$obj->cfg()
-	#				Modul-Config:	&Iterator::cfg()
-	# rein:	- 1. (Key3, Key1=>Val1, Key2=>Val2 [, ...])
-	#		- 2. nix
-	# raus:	- 1. die alten Werte der übergebenen Keys
-	#		- 2. %Objekt/Modul-Config
-	# !! Es wird kein Validitätstest durchgeführt !!
-	sub cfg {
-		my ($me, $target, $key, $val, @cfg, @r);
-		unless (ref $_[0] ){ 	# nicht als Methode gerufen
-			$target	= \%_cfg;
-		}else{					# ok, cfg des Objektes handlen
-			$me		= shift;
-			$target	= $me->{'_cfg'};
-		}
-
-		scalar @_	? do {shift @_ if $_[0] =~ /::/; 		# Parameter, also resp. cfg dotieren
-					   return keys %{$target->{'_set_'}} if $_[0] eq '-Keys';
-					   @cfg = @_}
-					: return (%{$target->{'_set_'}});	# man will lesen, also % liefern
-
-		while (@cfg) {
-			$key = shift @cfg;
-			push (@r, $target->{'_set_'}{$key});
-			last unless @cfg;
-			next if (exists $target->{'_set_'}{$cfg[0]});
-			if ($key eq '-DigLevel') {$target->{'_set_'}{'-DigLevel'} = shift @cfg;next;}
-			$target->{'_set_'}{$key} = shift (@cfg) ? 1 : 0
-				if exists $target->{'_set_'}{$key};
-		}
-		$target->{'_init_'}->($target);
-		return @r;
-	}
-
-	sub element {
-
-		my $me 			= shift;
-		$me->{'err'}	= undef;
-		my ($type, $ob, $cb, $stack, $seen, $key, $vparent, $err);
-		my $append		= 1;
-		my $context		= $_[0];
-
-		# Kontext (pfadabhängig) setzen...
-		($stack, $seen, $context) = ($me->_get_context($context))[0..2];
-		defined ($stack)	? ($stack 	? do {$me->{'stack'} = $stack;
-											  $me->{'_seen'} = $seen;}
-										: do {my @r = $me->_path (@_);
-											  unless (defined @r) {
-												  warn $me->{'err'}.=sprintf (" at %s line %s", (caller)[1,2])."\n";
-								  				  return;
-											  }
-											  return wantarray ? @r : $r[1]}
-							  )
-							: do {warn $me->{'err'}.=sprintf (" at %s line %s", (caller)[1,2])."\n";
-								  return};
-
-		$me->{'level'}	= $#{$me->{'stack'}};
-		my @res 		= $me->_handle_item ($stack, $seen, $me->{'contexts'}, $context);
-		(@{$me}{'path','val','key','level','vref','ppath','parent'}) = @res;
-
-		if ($me->{'err'}) {
-			warn $me->{'err'} .= sprintf (" at %s line %s", (caller)[1,2])."\n";
-		}
-		return wantarray ? (defined ($me->{'key'}) ? (@{$me}{'path','val','key','level','vref','ppath','parent'}) : ())
-						 : (defined ($me->{'key'}) || undef);
-	}
-
-
-	sub keys {
-		my $me			= shift;
-		my $path		= defined ($_[0]) ? shift : '';
-		my @_keys;
-		$me->{'err'}	= undef;
-
-		my ($elem, $context) = $me->_get_item ($path);
-		warn ($me->{'err'}.sprintf(" at %s line %s", (caller)[1,2])."\n") && return
-			unless defined $elem;
-
-		my $stack		= [[ $me->_init($elem), '' ]];
-		my $seen		= {};
-		my $contexts	= {};
-		$seen->{${$stack->[0]}[-2]} = $context;
-
-		while ( my $key = ($me->_handle_item ($stack, $seen, $contexts, $context))[0]) {
-			warn $me->{'err'}.sprintf(" at %s line %s", (caller)[1,2])."\n" if $me->{'err'};
-			push @_keys, $key;
-		}
-
-		return wantarray ? @_keys : scalar @_keys
-	}
-
-	sub values {
-		my $me 			= shift;
-		my $path		= defined ($_[0]) ? shift : '';
-		my @_vals;
-		$me->{'err'}	= undef;
-
-		my ($elem, $context) = $me->_get_item ($path);
-		warn ($me->{'err'}.sprintf(" at %s line %s", (caller)[1,2])."\n") && return
-			unless defined $elem;
-
-		my $stack 		= [[ $me->_init($elem, length ($path) ? 1 : 0), '' ]];
-		my $seen 		= {};
-		my $contexts	= {};
-		$seen->{${$stack->[0]}[-2]} = $context;
-
-		my ($key, $val) ;
-		while ( ($key, $val) = ($me->_handle_item($stack, $seen, $contexts, $context))[0, 1] ) {
-			warn $me->{'err'}.sprintf(" at %s line %s", (caller)[1,2])."\n" if $me->{'err'};
-			push @_vals, $val;
-		}
-		return wantarray ? @_vals : scalar @_vals
-	}
-
-
-	sub reset {
-		my $me		= shift;
-		my $path	= shift;
-		chomp $path;
-		$path		=~ s/[.+?*]$//;
-
-		defined $path 	? ( return exists ($me->{'contexts'}{$path}) && delete ($me->{'contexts'}{$path}) ? 1 : undef)
-					  	: ($me->{'contexts'} = {});
-
-		$me->{'stack'}	= $me->{'root_context'}{'item'} = [ [@{$me->{'root'}}] ];
-
-		$me->{'_seen'}	= {};
- 		my $vp = ${$me->{'stack'}[0]}[-2];chomp $vp;
-		$me->{'_seen'}{$vp}	= $me->{'root_context'}{'seen'}{$vp}	= 'ROOT OBJECT';
-
-		$me->{'err'}	= undef;
-
-	}
-
-
-	sub _ref_ex{
-		my $me = shift;
-		my ($r, $c, $t, $rt);
-		my $i = defined $_[1] && $_[1] > 0 || 0;
-		local $^W = undef;
-
-		unless (ref $_[0]) {
-			if ($_[0] =~ /^-FILE:.+/) {
-				($rt, $r) = $me->{'_cfg'}{'_known_refs_'}[$i]{'VFILE'} ? ('VFILE', 1) : ('undef', 0);
-			}else{
-				($rt, $r) = ('undef', 0);
-			}
-		}else{
-			($c, $t)	= $_[0] =~ /(.+)=(.+)\(/;
-			($t)		= $_[0] =~ /(.+)\(/ unless $c;
-			($rt, $r)   = $me->{'_cfg'}{'_known_refs_'}[$i]{$c}	? ($c, 1)
-															: ($me->{'_cfg'}{'_known_refs_'}[$i]{$t}	? ($t, 1)
-																										: ('undef', 0)
-															   );
-		}
-		return wantarray ? ($rt, $r) : $rt;
-	};
-
-
-	sub _init {
-		my $me = shift;
-		return $init{$me->_ref_ex($_[0])}->(@_)
-	}
-
-
-	# erhält:	- String mit Pfad zu Unter-Datenstruktur (a.1.b[*])
-	# liefert:	- item_ref (wie ein 'stack'-Element), die auf die
-	#			  per $_[0]=Pfad angegebene Unter-Datenstruktur verweist
-	#			- $seen-Hash
-	#			- um das \*$ bereinigten Pfad
-	# setzt:	- $me->{contexts}{$context}
-	#			- $me->{err}
-	sub _get_context {
-		my $me 		= shift;
-		my $context = defined ($_[0])? shift : '';
-		my ($stack, $seen, $item, $key, $level, $err);
-		chomp $context;
-
-		if (length $context) {
-			if ($context =~ s/\*$//)  {
-				unless (exists $me->{'contexts'}{$context}) {
-					($item, $key, $level) = ($me->_path ($context))[1..2];
-					($stack,
-					 $seen	) = $item	? do {$me->{'contexts'}{$context}{'item'} = [[ $me->_init($item,1), '' ]],
-					 						  $me->{'contexts'}{$context}{'seen'} = {}
-					 						 }
-									 	: ();
-					if ($stack) {
-				 		my $vp			= $stack->[0][-2];chomp $vp;
-				 		$seen->{$vp}	= $stack->[0][-1];
-					}
-				}else{			# Kontext bekannt
-					$stack	= $me->{'contexts'}{$context}{'item'};
-					$seen	= $me->{'contexts'}{$context}{'seen'};
-				}
-			}else{			# kein Sternchen, also 1 Wert holen bzw. setzen
-				$stack	= '';
-				$seen	= {};
-			}
-		}else{			# kein  Pfad angegeben
-			$stack	= $me->{'root_context'}{'item'};
-			$seen	= $me->{'root_context'}{'seen'};
-		}
-		$me->{'err'} = $err if $err;
-		return defined $stack ? ($stack, $seen, $context, $key, $level) : ();
-	}
-
-	# liefert die Adresse eines Datenobjektes [an "Pfad"]
-	# ${$item} muß ge_init() werden)
-	sub _get_item {
-		my $me 		= shift;
-		my $context = defined ($_[0]) ? shift : '';
-		my ($stack, $err);
-
-		chomp $context;
-
-		if (length $context) {
-			my ($item, $iref, $pref) = ($me->_path ($context))[1,4,-1];
- 			$stack = $iref ? (defined $item	? $item : $iref)
- 						   :  undef;
-		}else{
-			$stack =  $me->{'root_context'}{'item'}[-1][0];
-		}
-		$me->{'err'} = $err if $err;
-		return defined $stack ? ($stack, $context) : ();
-	}
-
-	sub _handle_item {
-		my $me = shift;
-		my ($stack, $seen, $contexts, $context) = @_;
-		my ($key, $val, $vref, $vparent, $parent, $_path, $path, $ob, $cb, $err);
-		my $append =	1;
-
-		my $level 						= $#{$stack};
-ITEM:	{ 	my $item					= $stack->[-1];
-			$_path 						= $item->[-1];
-			$vparent					= $item->[-2];
-			$parent						= $item->[0];
-			($ob, $cb)					= @{$item}[-4, -3];
-			($key, $vref)				= $elem{$item->[-5]}->($item);
-			$val						= defined $vref ? ${$vref} : undef;
-
-ISREF:		my ($ref_type, $is_ref) 	= $me->_ref_ex ($val, $level || 1);
-
-			if ($is_ref) {
-				my $tmp = $val;chomp $tmp;
-				if (exists $seen->{$tmp}){
-	  				$err = "Self reference: \'$_path$ob$key$cb\' refers to anchestor \'".(length ($seen->{$tmp}) ? $seen->{$tmp} : 'Root object')."\' ($tmp)";
-					$val = undef;
-					last ITEM;
-				}else{
-					$seen->{$tmp} 		= $_path;
-				}
-
-				if(!defined $me->{'_cfg'}{'_set_'}{'-DigLevel'} || ($level < $me->{'_cfg'}{'_set_'}{'-DigLevel'})){
-						$_path 				.= $ob.$key.$cb;
-						push @{$stack}, [ $init{$ref_type}->($val), $_path ];
-						$seen->{$tmp} 		= $_path;
-						goto ITEM if ($ref_type eq 'SCALAR');
-
-						$me->{'_cfg'}{'_set_'}{'-Nodes'}	? ($append 		= 0)
-															: do{$level		= $#{$stack};
-									 				   		 	 goto ITEM};
-				}
-			}elsif (!defined $key){
-				if ($#{$stack} > 0) {
-					pop @{$stack};
-					$level		= $#{$stack};
-					delete $seen->{$vparent};
-					goto ITEM;
-				}else{
-					delete $contexts->{$context};
-				}
-			}
-		}	# end ITEM
-		$path = ($append && defined $key) ? $_path.$ob.$key.$cb
-										  : $_path;
-		$me->{'err'} = $err;
-		return defined $key ? ($path, $val, $key, $level, $vref, $_path, $parent) : ();
-	}
-
-	# liefert Wert zu einem Pfad, setzt ihn, wenn $_[1] gegeben
-	# raus: Wert, Adresse, Elternadresse, Elternpfad, Level
-	sub _path {
-		my $me		= shift;
-		my $path	= $_[0];
-		$path		=~ s/[.+*]$//;
-		my $do_set	= @_ > 1;
-		my $level	= -1;
-		my $val 	= $me->{'root'}->[0];
-		my $pref	= $val;
-		my ($s) 	= $path =~ /^((?=\W)[^{\["'])/;
-		$s			= '\.' unless $s;
-		my $mc		= '[^'.$s.'\[\]{}]';
-		my ($p, $pp) = '';
-		my ($err, $vref, $val_added, $key, $match);
-
-		while ($path =~ /($s?{($mc+?)}|$s?\[($mc+?)\]|(^|$s)($mc+))/g){
-			$pp = $p;
-			$p .= ($key = $1);
-			{($match) = $key =~ /($mc+)/;
-			 $match =~ s/^["']// && $match =~ s/["']$//; }
-			my $r 	= defined ($2)	? 'HR'
-									: (defined ($3) ? 'AR'
-													: ((defined ($5) && ($match =~ /^-?\d+$/))	? 'AR'
-																								: 'HR')
-									  );
-			if ($r eq 'HR') {
-				$val = $me->_ref_ex ($val) eq 'HASH'? (exists $val->{$match} || $do_set	? do {$pref = $vref;
-																							  ${$vref = \$val->{$match}}}
-																						: do {$err	= "Not a valid hash key '$key': $val - '$p'";
-																							  last}
-													  )
-													: ($do_set && $vref	? do {$pref 		= $vref;
-																			  $$vref		= {};
-																			  $val_added	= $val unless $val_added;
-																			  $vref			= \$$vref->{$match}
-																			 }
-																		: do {$err	= "Not a hash reference: $val - '$p'";
-																			  last}
-													 );
-			}elsif ($r eq 'AR') {
-				$val = $me->_ref_ex ($val) eq 'ARRAY' ? (($match =~ /^-?\d+$/
-														  && $match <= $#{$val})
-														  || $do_set					?	do {$pref	= $$vref;
-																								${$vref = \$val->[$match]}}
-																						:	do {$err	= "Not a valid array index '$key': $val - '$p'";
-																								last}
-														)
-													  : ($do_set && $vref	? do {$pref			= $vref;
-														  						  $$vref		= [];
-																				  $val_added	= $val unless $val_added;
-																				  $vref			= \$$vref->[$match];
-																				 }
-																			: do{$err		= "Not an array reference: $val - '$p'";
-																				 last}
-														);
-			}else{
-				print "Huch?!\n";
-			}
-
-			$level++;
-		}
-		if (length ($p) < length ($path)) {
-			$err = "Syntax error in pathname: '$path'" unless $err;
-		}
-
-		$me->{'err'} = $err if $err;
-		return $err	? (wantarray ? () : undef)
-					: ($do_set	? do{$$vref = $_[1];
-									 defined $val_added ? ($p, $val_added, $match, $level, $vref, $pp, $pref)
-														: ($p, $val, $match, $level, $vref, $pp, $pref);}
-								: ($p, $val, $match, $level, $vref, $pp, $pref));
-	}
-
-#--- main... ------------------------------------------------------------------
-1;
-
-
-__END__
-
-=head1
-
-=head2 Iterator.pm - liefert Pfade/Werte komplexer Datenstrukturen
-
-=head2 B<1. Kurzbeschreibung>
-
-Iterator.pm ist ein objektorientiertes (reines) Perl-Modul zum Durchlaufen von komplexen Datenstrukturen (LoL, LoH, HoL, HoH usf.).
-Während die eingebauten Perl-Funktionen
-foreach(), each(), keys() und values() nur eine Ebene einer Struktur bearbeiten können,
-gräbt Iterator in die Tiefe - und betrachtet eine Struktur quasi als eindimensionalen Hash.
-
-Zu jedem Element einer verschachtelten Struktur werden sukzessive der symbolische Name ("Datenpfad"),
-der - nicht modifizierte! - Wert sowie einige Zusatzinformationen geliefert.
-
-Damit stellt Iterator eine einheitliche Syntax zur Abarbeitung von Datenquellen unterschiedlichen Typs bereit.
-
-Iterator modifiziert die übergebene Datenstruktur nicht. Allerdings kann der Benutzer Werte explizit via Iterator ändern.
-
-Iterator exportiert keine Variablen oder Funktionen. Zwar lassen sich bekanntlich alle Paket-subs auch via
-&Paketname::subname () aufrufen, sinnvolle Ergebnisse darf man dann aber nicht zwingend erwarten :-)
-
-Ausnahmen gibts aber auch hier:
-
-=over 2
-
-=item B<Data::Iterator::cfg()>
-
-womit sich (auch) modulweite Voreinstellungen lesen/setzen lassen.
-
-=item B<$Data::Iterator::VERSION>
-
-die Versionsnummer des Moduls.
-
-=back
-
-=head2 B<2. Abhängigkeiten>
-
-Iterator benötigt die Module Carp und FileHandle (Bestandteile der Standarddistributionen).
-
-=head2 B<3. Verwendung>
-
-=begin text
-
-	use strict;
-	use Data::Iterator                  # assuming you put it into
-	                                    # your [site/]lib/Data-directory
-
-    # Create a datastructure:
-     my %data  = (a => 1,
-                  b => [ qw(b1, b2, b3) ],
-                  c => {c1 => sub {return qw(first, second, third)},
-                        c2 => undef,
-                        c3 => 'val_of_c3'}
-                       }
-                 );
-    ## Create an Iterator-object:
-    my $dobj = new Data::Iterator (\%data)
-         || die "Oops. Creation of Iterator-object failed: $!";
-
-    ## Now let's get all the names + values...
-    while (my ($path, $val) = $dobj->element) {
-      print "path: $path, value: $val\n";
-      # or whatever is to be done with $path, $val :-)
-    }
-    # ...and prepare for a new loop, if necessary:
-    $dobj->reset;
-    # ...
-
-    ## Lookup data in $data{'c'}...
-    while (my ($path, $val) = $dobj->element('{c}*')) { # note the asterisk!
-      print "path: $path, value: $val\n";
-      # or whatever is to be done with $path, $val :-)
-    }
-    # ...and prepare for a new loop, if necessary:
-    $dobj->reset('{c}');
-    # ...
-
-    ## Just retrieve a single value...
-    my $distinct_val   = $dobj->element ('{b}[1]');
-
-    ## ...or set a value (autovivificates data element, if necessary)
-    my $old_val_of_b_1 = $dobj->element ('b.1', 'A New Value!');
-
-
-    ## Lookup a file's content...
-    my $fobj = new Data::Iterator ('-FILE:C:\path\to\file.ext'
-         || die "Oops. Creation of Iterator-object failed: $!";);
-    while (my ($path, $val) = $dobj->element) {
-      print "path: $path, value: $val\n";
-      # or whatever is to be done with $path, $val :-)
-    }
-
-    ## ...OR:
-    open (FH, '< C:\path\to\file.ext')
-         || die "Oops. Could not open file: $!";
-    my $fobj = new Data::Iterator (\*FH)
-         || die "Oops. Creation of Iterator-object failed: $!";
-    # ...
-
-
-=end text
-
-
-=head2 B<4. Methoden>
-
-=over 2
-
-=item B<new()>
-
-Liefert ein neues Iterator-Datenobjekt als blessed reference auf einen Hash; undef, falls keine Referenz auf die übergebene Quell-Datenstruktur gebildet werden konnte.
-
-Parameter (Referenz auf die darzustellende Datenstruktur):
-
-  (1) \%hash
-  (2) \@array
-  (3) \&code
-  (4) \*glob
-  (5) \$scalar   (nicht sehr struktural...)
-  (6) '-FILE:Path/to/file.ext'
-  (7) $scalar    (ditto nicht sehr struktural...)
-
-Rückgabe:
-
-  - Scalar: Gesegnetet Referenz auf Iterator-Objekt, oder
-  - undef:  bei Mißerfolg (Objekt konnte wg. unbekannten Referenztyps nicht erstellt werden)
-
-
-
-=item B<cfg()>
-
-Setzt/liest je nach Aufruf die Konfiguration des respektiven Iterator-Objektes (Aufruf als I<Objektmethode>) oder die modulweite Konfiguration (Aufruf als I<Klassenmethode> Data::Iterator->cfg()). Benannte Einstellungen werden in der Reihenfolge der Übergabe in einem I<Array> zurückgegeben.
-
-Welche Werte gesetzt und/oder gelesen werden, entscheidet sich anhand der übergebenen Parameter:
-
-- Wird der Name einer Einstellung gegeben, gefolgt von einem Wert (== Nicht-Einstellungsname), wird diese Einstellung auf den gegebenen Wert gesetzt. Der alte Wert wird zurückgeliefert:
-
-  my @object_opts = $dobj->cfg    (-opt1 => 'val1', -opt2 => 'val2', ...);
-  my @global_opts = Data::Iterator->cfg (-opt1 => 'val1', -opt2 => 'val2', ...);
-
-  setzt -opt1 und -opt2 auf 'val1' bzw. 'val2' und liefert:
-
-  (old_val_of_opt1, old_val_of_opt2, ...)
-
-- Wird nur der Einstellungsname gegeben, liefert cfg() den zugehörigen Wert:
-
-  my @object_opts = $dobj->cfg    ('-opt2', '-opt1', ...);
-  my @global_opts = Data::Iterator->cfg ('-opt2', '-opt1', ...);
-
-  liefert:
-
-  (val_of_opt2, val_of_opt1, ...)
-
-- Setzen und Lesen können bei der Parameterübergabe beliebig kombiniert werden:
-
-  my @object_opts = $dobj->cfg    (-opt3, -opt1 => 'new!', -opt2);
-  my @global_opts = Data::Iterator->cfg (-opt3, -opt1 => 'new!', -opt2);
-
-  liefert:
-
-  (val_of_opt3, old_val_of_opt1, val_of_-opt2 )
-
-- Wird kein Parameter gegeben, liefert cfg() alle Einstellungen in einem I<Hash> zurück:
-
-  my %object_opts = $dobj->cfg;
-  my %global_opts = Data::Iterator->cfg;
-
-Zu den Einstellungen siehe Abschnitt B<5. Optionen>.
-
-
-=item B<element()>
-
-Liefert im Arraykontext Informationen über Elemente der an new() übergebenen Datenstruktur, eine leere Liste, wenn keine weiteren elemente vorhanden sind.
-
-Liefert im Scalarkontext 1, wenn ein Element gefunden wurde, undef, falls Strukturende erreicht.
-
-element() erzeugt I<keine Liste> und I<keine Kopie> der übergebenen Daten, sondern grast die Struktur elementweise ab und liefert im Listenkontext eine Liste (sic!) mit diversen Informationen über das jeweilige Element - weshalb bspw. eine while()-Schleife hervorragend geeignet ist, den kompletten Baum zu durchforsten.
-
-In einem foreach-Loop hingegen liefert element() nicht zwingend die gewünschten Resultate... (foreach() arbeitet eine Liste ab und stellt selber den Listenkontext her)
-
-  my ($p, $v, $k, $l, $r, $pp, $p) = $obj->element;
-
-wobei:
-
-  [0] $p:  "Datenpfad", ein String im Format {'key'}|[index]{'key'}|[index] usw.
-  [1] $v:  Der Wert
-  [2] $k:  der Schlüssel/Index des aktuellen Elements
-  [3] $l:  Ebene ("level") des aktuellen Elements in der Hierarchie
-  [4] $r:  Referenz auf das aktuelle Element
-  [5] $pp: "Elternpfad", Name des nächsthöheren Datenelements (Array, Hash usf.)
-           Elternpfad.({Schlüssel}|{Index]) ergibt den Datenpfad [0].
-  [6] $p:  Elter des aktuellen Elements
-
-Zur sukzessiven Listung einer Datenstruktur verwende man bspw. folgenden Code:
-
-  while (my @elm = $dobj->element) {
-    print join ('|', @elm),"\n";
-  }
-
-oder:
-
-  while ($dobj->element) {
-    print $dobj->{path}.' = '.$dobj->{val}.', at '.$dobj->{vref}."\n";
-  }
-
-Soll eine Unterstruktur dargestellt werden, gebe man element() eine Pfadangabe (einen String) mit:
-
-  while (my @elm = $dobj->element('{c}*')) {
-    print join ('|', @elm),"\n";
-  }
-
-Soll ein einzelner Wert zu einem Datenpfad geliefert werden, spart man sich das Sternchen:
-
-  print join ('|', $dobj->element ('{c}')),"\n";
-
-Tritt ein Fehler auf, findet sich eine entsprechende Meldung in
-
-  $dobj->{'err'}
-
-Nützlich, wenn warn()-ungen abgeschaltet wurden.
-
-Via element() können Werte gesetzt werden. Dazu akzeptiert die Methode einen zweiten Parameter, und liefert den alten Wert:
-
-  print $dobj->element ('{c}{c3}', 'a new value!');
-  # druckt 'val_of_c3'
-  print ($dobj->element ('{c}{c3}'))[1];
-  # druckt 'a new value!'
-
-
-=item B<reset()>
-
-Setzt den internen Satck von element() zurück, d.h. nach einem unvollständigen Durchlauf beginnt element() wieder am Anfang der initialen Datenstruktur. Nützlich, wenn eine while($dobj->element()){...}-Schleife vorzeitig verlassen wurde.
-
-reset() arbeitet selektiv. Wird ein Datenpfad übergeben, wird der Stack für die der entsprechende Unterstruktur zurückgesetzt.
-
-
-=item B<keys()>
-
-Liefert einen Array mit den Datenpfaden des Objektes, über den sich bspw. mit foreach() iterieren läßt:
-
-  my @keys   = $dobj->keys;
-  my @c_keys = $dobj->keys('{c}');
-
-keys() kann ein initialer Datenpfad mitgegeben werden. keys() liefert dann die Datenpfade des Elementes, das an [Datenpfad] gefunden wurde. Ein gegebenfalls angehängtes Sternchen wird ignoriert.
-
-
-=item B<values()>
-
-Liefert einen Array mit den Werten des Objektes, über den sich bspw. mit foreach() iterieren läßt:
-
-  my @vals   = $dobj->values;
-  my @c_vals = $dobj->values('{c}');
-
-Auch dieser Methode kann ein initialer Datenpfad mitgegeben werden. values() liefert dann die Werte des Elementes, das an [Datenpfad] gefunden wurde. Ein gegebenfalls angehängtes Sternchen wird ignoriert.
-
-
-=back
-
-=head2 B<5. Optionen>
-
-Iterator kennt drei Gruppen von Einstellungen, die verschiedene Bereiche beeinflussen:
-
-=over 2
-
-=item (1) die Darstellung:
-
-"-Nodes"
-Werte: 0|1
-
-Schaltet die Darstellung von Knoten (Elementen, die eine Referenz bspw. auf einen Hash oder Array enthalten) ein (1) bzw. aus (0). Default ist 0.
-
-"-DigLevel"
-Werte: undef|Integer
-
-Gibt an, ob alle Ebenen der Datenstruktur dargestellt werden (undef) oder nur Elemente bis zur (inklusive) Ebene n. Default ist undef.
-
-=item (2) die Auflösung des als Datenobjekt übergebenen Wertes bei new():
-
-"-SRefs"
-Werte: 0|1
-
-Gibt an, ob eine initiale Skalarreferenz bei Initialisierung bis zu ersten Nicht-Skalarreferenz aufgelöst werden soll (1) oder nicht (0). Default ist 1.
-
-Wird hier 0 gegeben, liefert element() lediglich das Argument zurück. Es sei denn, "-DigSRefs" ist auf 1 gesetzt.
-
-"-Files"
-Werte: 0|1
-
-Gibt an, ob ein Argument im "-File:..."-Format bei Initialisierung den angegebenen File lesen soll (1) oder nicht (0). Default ist 1.
-
-Wird hier 0 gegeben, liefern element() und values() lediglich das Argument zurück. Es sei denn, "-DigFiles" ist auf 1 gesetzt.
-
-
-"-Code"
-Werte: 0|1
-
-Gibt an, ob ein Coderef-Argument bei Initialisierung ausgeführt wird (1) oder nicht (0). Default ist 1.
-
-Wird hier 0 gegeben, liefern element() und values() lediglich das Argument zurück. Es sei denn, "-DigCode" ist auf 1 gesetzt.
-
-
-=item (3) die Auflösung von in der Datenstruktur enthaltenen Referenzen bei element(), keys(), values():
-
-"-DigSRefs"
-Werte: 0|1
-
-Gibt an, ob Skalarreferenzen aufgelöst werden (1) oder nicht (0). Default ist 1.
-
-Merke: Verkettete Skalarreferenzen werden vollständig aufgelöst.
-
-"-DigFiles"
-Werte: 0|1
-
-Schaltet die Auflösung von "-File:..."-Elementen (i.e. Öffnen und sukzessives einlesen der Datei) ein (1) bzw. aus (0). Default ist 1.
-
-"-DigCode"
-Werte: 0|1
-
-Schaltet die Ausführung von Codereferenzen ein (1) bzw. aus (0). Default ist 1.
-
-"-DigGlobs"
-Werte: 0|1
-
-Schaltet die Verfolgung von Globreferenzen (i.e. Lesen vom referenzierten Handle) ein (1) bzw. aus (0). Default ist 1.
-
-=back
-
-
-=head2 B<6. Feinheiten>
-
-=over 2
-
-=item Datentypen
-
-Folgende Datentypen kann Iterator handhaben:
-
-- Skalare: werden mit ihrem Inhalt dargestellt
-
-- Referenzen: werden aufgelöst. Erkannt werden die Perl-üblichen Typen (Scalar, Array, Hash, Code, Glob). Die unspezifische REF-Referenz wird als einfacher Skalar behandelt.
-
-Neben diesen Typen erkennt Iterator ein FileHandle-Objekt, und liest die damit bezogene Datei.
-
-- Weiters kennt Iterator den Verweis auf eine Datei. Dieser wird als String gegeben, und muß im Format
-
-"-File:Pfad/dateiname"
-
-vorliegen. Kann die angegebene Datei nicht zum Lesen geöffnet werden, wird ge-warn()-t.
-
-
-
-=item Zirkuläre Referenzen
-
-Referenzen, die auf einen Elter des aktuellen Datenelementes verweisen, werden nicht aufgelöst. Sie erzeugen einen nicht-tödlichen Fehler nebst Meldung. Der Wert des Elementes wird als undef geliefert.
-
-Dies gilt auch für via "-File:..." bezogene Dateien, die einen Verweis auf sich selbst enthalten.
-
-Wird ein Datenpfad gegeben, kann das bezogene Datenelement getrost auf einen Elter verweisen - es wird gleichwohl aufgelöst.
-
-=item element()
-
-- Verhalten
-
-Wird eine Struktur via element() komplett durchlaufen, fängt element() in einer späteren Schleife von vorne an.
-
-Wird der Durchlauf abgebrochen, machen spätere element()-Aufrufe da weiter, wo zuvor abgebrochen wurde.
-
-Ist dies nicht gewünscht, sollte zwischenzeitlich reset() aufgerufen werden. Dies setzt element() auf das erste Element zurück.
-
-Diese Verhalten gilt auch für die Abarbeitung von Teilstrukturen, reset() ist dann der entsprechende Datenpfad zu übergeben.
-
-Merke: element()-Aufrufe mit unterschiedlichen Datenpfaden beeinflussen sich wechselseitig I<nicht>.
-
-Gleiches gilt fü keys()- bzw. values()-Aufrufe. Diese interferieren in keinem Fall mit element()-Aufrufen.
-
-element() dotiert folgende Datenfelder seines Objektes:
-
-@{$dobj}{'path','val','key','level','vref','ppath','parent'}
-
-Objekttheoretisch zwar nicht ganz sauber, kann damit stets auf die letzten Ergebnisse eines element()-Aufrufes zugegriffen werden. Dies gilt I<nicht>, wenn via element() ein Wert gesetzt wurde.
-
-- Dateien
-
-Via "-File:...", \*Glob bzw. FileHandle-Objekt bezogene Dateien/Handles können mit element() nicht beschrieben werden. Siehe dazu Stichwort "Pseudoarrays".
-
-- Autovivification:
-
-Wird element() ein Datenpfad übergeben, dessen letzter Schlüssel/Index auf ein Element mit einem inexistenten Elter verweist, wird erfolgt keine Wunderzeugung des Elters. Dies im Unterschied zum Standardlookup in Perl.
-
-Wird hingegen via element() ein Wert I<gesetzt>, werden bei Bedarf alle nicht vorhandenen Vorfahren gezeugt.
-
-=item Ebenen
-
-Die jeweils gelieferte Ebene eines Datenelementes gibt die Schachtelungstiefe an, gerechnet von der aktuellen Wurzel. Die Zählung beginnt mit 0.
-
-Will sagen, die Ebene 0 der Stammstruktur ist nicht identisch mit der Ebene 0 einer Teilstruktur, die ihrerseits auf einer beliebigen Ebene der Stammstruktur angesiedelt sein kann.
-
-Entsprechend begrenzt die Einstellung -DigLevel die Datendarstellung stets auf n Ebenen von der aktuellen Wurzel an gerechnet, gleich ob gerade die Stammstruktur (Datenpfad = '' oder undef) oder eine Teilstruktur dargestellt wird.
-
-=back
-
-
-=over 2
-
-=item Datenpfade, Format
-
-element(), keys() und values() sind recht tolerant hinsichtlich der Schreibweise der ggf. übergebenen Pfade zu den Daten.
-
-Die Standardnotation entspricht der Perl-mäßigen Indizierung von Hashes/Arrays:
-
-  my $path = "{'key1'}{'key2'}[2][1]";
-
-Wem das zu umständlich ist, kann zur verkürzten Notation greifen:
-
-  my $path = 'key1.key2.2.1';
-
-Soll ein klammerloser Pfad richtig aufgelöst werden, müssen Hashschlüssel mindestens ein nicht-numerisches Zeichen enthalten. Sonst werden sie für Arrayindices gehalten - und generieren einen nicht-fatalen Fehler nebst Meldung.
-
-Weiters kann ein beliebiger Trenner definiert werden - nützlich, wenn der "." in bezogenen Hashschlüsseln vorkommt:
-
-  my $path = "#key1#key2#2#1";
-
-Merke:
-
-- Ist das erste Zeichen im Pfad nicht-alphanumerisch, wird dieses als Trenner behandelt.
-  Ausnahmen: [ und {
-
-- Ist das erste Zeichen alphanumerisch, wird der . als Trenner angenommen.
-
-- klammerlose und klammerhaltige Schreibweise dürfen gemischt werden: "#key1{key2}[2]#[1]"
-
-- vor dem Backslash \ als Trenner sollte man sich hüten.
-
-- Das quoten von Hashschlüsseln ist nicht zwingend erforderlich.
-
-=item Behandlung von Coderefs
-
-Coderefs werden derart aufgelöst, daß der referenzierte Code ausgeführt wird. Dies geschieht bereits bei der Initialisierung des ensprechenden Datenelementes.
-
-Vor der Ausführung werden $SIG{__WARN__} und $SIG{__DIE__} lokal auf eine eigene Routine verbogen, Fehler im referenzierten Code führen also nicht zum Tod des aktuellen Skriptes.
-
-Die Ausgabe von im Code ausgelöstem warn bzw. die wird abgefangen und gespeichert.
-
-Die Rückgabewerte des Codes werden in einem Pseudoarray gespeichert und von element() bzw. values() geliefert.
-
-Findet sich im ersten Element des Ergebnisarray ein Array namens '_ERR_', hat der referenzierte Code ge-warn()t oder ge-carp()t oder ist mit die() bzw. croak() abgestorben. Wenn nicht, dann mutmaßlich nicht. Warnungen bzw. Tode können anhand der Präfixe 'WARN : ' bzw. 'FATAL: ' unterschieden werden.
-
-=item Pseudoarrays
-
-Werden "-FILE:..."- oder Coderef-Elemente aufgelöst, finden sich die Ergebnisse in einem Pseudoarray.
-
-Pseudo deshalb, diese Arrays nicht als solche existieren. Entsprechend kann auf deren Elemente nicht unmittelbar - etwa über einen entsprechenden Datenpfad - zugegriffen werden.
-Dies deshalb, weil Iterator die ursprüngliche Datenstruktur nicht modifizieren mag und deshalb keinen Handle/Datenpfad kennt bzw. generiert, der einen "normalen" Zugriff erlauben würde.
-
-=back
-
-
-=head2 B<7. Version>
-
-0.02 vom 10.12.2000
-
-
-=head2 B<8. Autor>
-
-  Hartmut Camphausen <h.camp@creagen.de>
-  Internet: http://www.creagen.de/
-
-
-=head2 B<9.Copyright>
-
-Copyright (c) 2000 by CREAGEN Computerkram Hartmut Camphausen <h.camp@creagen.de>. Alle Rechte vorbehalten.
-
-Dieses Modul ist freie Software. Es kann zu den gleichen Bedingungen genutzt, verändert und weitergegeben werden wie Perl selbst.
+This documentation describes version 0.01 of Iterator.pm, August 18, 2005.
 
 =cut
+
+use strict;
+use warnings;
+package Iterator;
+our $VERSION = '0.01';
+
+# Declare exception classes
+use Exception::Class
+   (
+    'Iterator::X' =>
+    {
+        description => 'Generic Iterator exception',
+    },
+    'Iterator::X::Parameter_Error' =>
+    {
+        isa         => 'Iterator::X',
+        description => 'Iterator method parameter error',
+    },
+    'Iterator::X::Exhausted' =>
+    {
+        isa         => 'Iterator::X',
+        description => 'Attempt to next_value () on an exhausted iterator',
+    },
+    'Iterator::X::Am_Now_Exhausted' =>
+    {
+        isa         => 'Iterator::X',
+        description => 'Signals Iterator object that it is now exhausted',
+    },
+    'Iterator::X::User_Code_Error' =>
+    {
+        isa         => 'Iterator::X',
+        fields      => 'eval_error',
+        description => q{An exception was thrown within the user's code},
+    },
+    'Iterator::X::IO_Error' =>
+    {
+        isa         => 'Iterator::X',
+        fields      => 'os_error',
+        description => q{An I/O error occurred},
+    },
+    'Iterator::X::Internal_Error' =>
+    {
+        isa         => 'Iterator::X',
+        description => 'An Iterator.pm internal error.  Please contact author.',
+    },
+   );
+
+# Class method to help caller catch exceptions
+sub Exception::Class::Base::caught
+{
+    my $class = shift;
+    return Exception::Class->caught($class);
+}
+
+# Croak-like location of error
+sub Iterator::X::location
+{
+    my ($pkg,$file,$line);
+    my $caller_level = 0;
+    while (1)
+    {
+        ($pkg,$file,$line) = caller($caller_level++);
+        last if $pkg !~ /\A Iterator/x  &&  $pkg !~ /\A Exception::Class/x
+    }
+    return "at $file line $line";
+}
+
+# Die-like location of error
+sub Iterator::X::Internal_Error::location
+{
+    my $self = shift;
+    return "at " . $self->file () . " line " . $self->line ()
+}
+
+# Override full_message, to report location of error in caller's code.
+sub Iterator::X::full_message
+{
+    my $self = shift;
+
+    my $msg = $self->message;
+    return $msg  if substr($msg,-1,1) eq "\n";
+
+    $msg =~ s/[ \t]+\z//;   # remove any trailing spaces (is this necessary?)
+    return $msg . q{ } . $self->location () . qq{\n};
+}
+
+
+## Constructor
+
+# Method name:   new
+# Synopsis:      $iterator = Iterator->new( $code_ref );
+# Description:   Object constructor.
+# Created:       07/27/2005 by EJR
+# Parameters:    $code_ref - the iterator sequence generation code.
+# Returns:       New Iterator.
+# Exceptions:    Iterator::X::Parameter_Error (via _initialize)
+sub new
+{
+    my $class = shift;
+    my $self  = \do {my $anonymous};
+    bless $self, $class;
+    $self->_initialize(@_);
+    return $self;
+}
+
+{ # encapsulation enclosure
+
+    # Attributes:
+    my %code_for;          # The sequence code (coderef) for each object.
+    my %is_exhausted;      # Boolean: is this object exhausted?
+    my %next_value_for;    # One-item lookahead buffer for each object.
+    # [if you update this list of attributes, be sure to edit DESTROY]
+
+    # Method name:   _initialize
+    # Synopsis:      $iterator->_initialize( $code_ref );
+    # Description:   Object initializer.
+    # Created:       07/27/2005 by EJR
+    # Parameters:    $code_ref - the iterator sequence generation code.
+    # Returns:       Nothing.
+    # Exceptions:    Iterator::X::Parameter_Error
+    #                Iterator::X::User_Code_Error
+    # Notes:         For internal module use only.
+    #                Caches the first value of the iterator in %next_value_for.
+    sub _initialize
+    {
+        my $self = shift;
+
+        Iterator::X::Parameter_Error->throw(q{Too few parameters to Iterator->new()})
+            if @_ < 1;
+        Iterator::X::Parameter_Error->throw(q{Too many parameters to Iterator->new()})
+            if @_ > 1;
+        my $code = shift;
+        Iterator::X::Parameter_Error->throw (q{Parameter to Iterator->new() must be code reference})
+            if ref $code ne 'CODE';
+
+        $code_for {$self} = $code;
+
+        # Get the next (first) value for this iterator
+        eval
+        {
+            $next_value_for{$self} = $code-> ();
+        };
+
+        my $ex;
+        if ($ex = Iterator::X::Am_Now_Exhausted->caught ())
+        {
+            # Starting off exhausted is okay
+            $is_exhausted{$self} = 1;
+        }
+        elsif ($@)
+        {
+            Iterator::X::User_Code_Error->throw (message => "$@",
+                                                 eval_error => $@);
+        }
+
+        return;
+    }
+
+    # Method name:   DESTROY
+    # Synopsis:      (none)
+    # Description:   Object destructor.
+    # Created:       07/27/2005 by EJR
+    # Parameters:    None.
+    # Returns:       Nothing.
+    # Exceptions:    None.
+    # Notes:         Invoked automatically by perl.
+    #                Releases the hash entries used by the object.
+    #                Module would leak memory otherwise.
+    sub DESTROY
+    {
+        my $self = shift;
+        delete $code_for{$self};
+        delete $is_exhausted{$self};
+        delete $next_value_for{$self};
+    }
+
+    # Method name:   value
+    # Synopsis:      $next_value = $iterator->value();
+    # Description:   Returns each value of the sequence in turn.
+    # Created:       07/27/2005 by EJR
+    # Parameters:    None.
+    # Returns:       Next value, as generated by caller's code ref.
+    # Exceptions:    Iterator::X::Exhausted
+    # Notes:         Keeps one forward-looking value for the iterator in
+    #                   %next_value_for.  This is so we have something to
+    #                   return when user's code throws Am_Now_Exhausted.
+    sub value
+    {
+        my $self = shift;
+
+        Iterator::X::Exhausted->throw(q{Iterator is exhausted})
+            if $is_exhausted{$self};
+
+        # The value that we'll be returning this time.
+        my $this_value = $next_value_for{$self};
+
+        # Compute the value that we'll return next time
+        eval
+        {
+            $next_value_for{$self} = $code_for{$self}->(@_);
+        };
+        if (my $ex = Iterator::X::Am_Now_Exhausted->caught ())
+        {
+            # Aha, we're done; we'll have to stop next time.
+            $is_exhausted{$self} = 1;
+        }
+        elsif ($@)
+        {
+            Iterator::X::User_Code_Error->throw (message => "$@",
+                                                 eval_error => $@);
+        }
+
+        return $this_value;
+    }
+
+    # Method name:   is_exhausted
+    # Synopsis:      $boolean = $iterator->is_exhausted();
+    # Description:   Flag indicating that the iterator is exhausted.
+    # Created:       07/27/2005 by EJR
+    # Parameters:    None.
+    # Returns:       Current value of %is_exhausted for this object.
+    # Exceptions:    None.
+    sub is_exhausted
+    {
+        my $self = shift;
+
+        return $is_exhausted{$self};
+    }
+
+    # Method name:   isnt_exhausted
+    # Synopsis:      $boolean = $iterator->isnt_exhausted();
+    # Description:   Flag indicating that the iterator is NOT exhausted.
+    # Created:       07/27/2005 by EJR
+    # Parameters:    None.
+    # Returns:       Logical NOT of %is_exhausted for this object.
+    # Exceptions:    None.
+    sub isnt_exhausted
+    {
+        my $self = shift;
+
+        return ! $is_exhausted{$self};
+    }
+
+} # end of encapsulation enclosure
+
+
+# Function name: is_done
+# Synopsis:      Iterator::is_done ();
+# Description:   Convenience function. Throws an Am_Now_Exhausted exception.
+# Created:       08/02/2005 by EJR, per Will Coleda's suggestion.
+# Parameters:    None.
+# Returns:       Doesn't return.
+# Exceptions:    Iterator::X::Am_Now_Exhausted
+sub is_done
+{
+    Iterator::X::Am_Now_Exhausted->throw()
+}
+
+
+1;
+__END__
+
+=head1 SYNOPSIS
+
+ use Iterator;
+
+ # Making your own iterators from scratch:
+ $iterator = Iterator->new ( sub { code } );
+
+ # Accessing an iterator's values in turn:
+ $next_value = $iterator->value();
+
+ # Is the iterator out of values?
+ $boolean = $iterator->is_exhausted();
+ $boolean = $iterator->isnt_exhausted();
+
+ # Within {code}, above:
+ Iterator::is_done();    # to signal end of sequence.
+
+
+=head1 DESCRIPTION
+
+This module is meant to be the definitive implementation of iterators,
+as popularized by Mark Jason Dominus's lectures and recent book
+(I<Higher Order Perl>, Morgan Kauffman, 2005).
+
+An "iterator" is an object, represented as a code block that generates
+the "next value" of a sequence, and generally implemented as a
+closure.  When you need a value to operate on, you pull it from the
+iterator.  If it depends on other iterators, it pulls values from them
+when it needs to.  Iterators can be chained together (see
+L<Iterator::Util> for functions that help you do just that), queueing
+up work to be done but I<not actually doing it> until a value is
+needed at the front end of the chain.  At that time, one data value is
+pulled through the chain.
+
+Contrast this with ordinary array processing, where you load or
+compute all of the input values at once, then loop over them in
+memory.  It's analogous to the difference between looping over a file
+one line at a time, and reading the entire file into an array of lines
+before operating on it.
+
+Iterator.pm provides a class that simplifies creation and use of these
+iterator objects.  Other IteratorC<::> modules (see L</"SEE ALSO">)
+provide many general-purpose and special-purpose iterator functions.
+
+Some iterators are infinite (that is, they generate infinite
+sequences), and some are finite.  When the end of a finite sequence is
+reached, the iterator code block should throw an exception of the type
+C<Iterator::X::Am_Now_Exhausted>.  This will signal the Iterator class
+to mark the object as exhausted.  The L</is_exhausted> method will
+then return true, and the C<isnt_exhausted> method will return false.
+Any further calls to the C<value> method will throw an exception of
+the type C<Iterator::X::Exhausted>.  See L</DIAGNOSTICS>.
+
+Note that in many, many cases, you will not need to explicitly create
+an iterator; there are plenty of iterator generation and manipulation
+functions in the other associated modules.  You can just plug them
+together like building blocks.
+
+=head1 METHODS
+
+=over 4
+
+=item new
+
+ $iter = Iterator->new( sub { code } );
+
+Creates a new iterator object.  The code block that you provide will
+be invoked by the C<value> method.  The code block should have some
+way of maintaining state, so that it knows how to return the next
+value of the sequence each time it is called.
+
+If the code is called after it has generated the last value in its
+sequence, it should throw an exception:
+
+    Iterator::X::Am_Now_Exhausted->throw ();
+
+This very commonly needs to be done, so there is a convenience
+function for it:
+
+    Iterator::is_done ();
+
+=item value
+
+ $next_value = $iter->value ();
+
+Returns the next value in the iterator's sequence.  If C<value> is
+called on an exhausted iterator, an Iterator::X::Exhausted exception
+is thrown.
+
+=item is_exhausted
+
+ $bool = $iter->is_exhausted ();
+
+Returns true if the iterator is exhausted.  In this state, any call
+to the iterator's L<value> method will throw an exception.
+
+=item isnt_exhausted
+
+ $bool = $iter->isnt_exhausted ();
+
+Returns true if the iterator is not yet exhausted.
+
+=back
+
+=head1 FUNCTION
+
+=over 4
+
+=item is_done
+
+ Iterator::is_done();
+
+You call this function after your iterator code has generated its last
+value.  See L</TUTORIAL>.  This is simply a convenience wrapper for
+
+ Iterator::X::Am_Now_Exhausted->throw();
+
+=back
+
+=head1 THINKING IN ITERATORS
+
+Typically, when people approach a problem that involves manipulating a
+bunch of data, their first thought is to load it all into memory, into
+an array, and work with it in-place.  If you're only dealing with one
+element at a time, this approach usually wastes memory needlessly.
+
+For example, one might get a list of files to operate on, and loop
+over it:
+
+    my @files = fetch_file_list(....);
+    foreach my $file (@files)
+        ...
+If C<fetch_file_list> were modified to return an iterator instead of
+an array, the same code could look like this:
+
+    my $file_iterator = fetch_file_list(...)
+    while ($file_iterator->isnt_exhausted)
+        ...
+
+The advantage here is that the whole list does not take up memory
+while each individual element is being worked on.  For a list of
+files, that's probably not a lot of overhead.  For the contents of
+a file, on the other hand, it could be huge.
+
+If a function requires a list of items as its input, the overhead
+is tripled:
+
+    sub myfunc
+    {
+        my @things = @_;
+        ...
+
+Now in addition to the array in the calling code, Perl must copy that
+array to C<@_>, and then copy it again to C<@things>.  If you need to
+massage the input from somewhere, it gets even worse:
+
+    my @data = get_things_from_somewhere();
+    my @filtered_data = grep {code} @data;
+    my @transformed_data = map {code} @filtered_data;
+    myfunc (@transformed_data);
+
+If C<myfunc> is rewritten to use an Iterator instead of an array,
+things become much simpler:
+
+    my $data = ilist (get_things_from_somewhere());
+    $filtered_data = igrep {code} $data;
+    $transformed_data = imap {code} $filtered_data;
+    myfunc ($transformed_data);
+
+(This example assumes that the C<get_things_from_somewhere> function
+cannot be modified to return an Iterator.  If it can, so much the
+better!)  Now the original list is still in memory, inside the
+C<$data> Iterator, but everwhere else, there is only one data element
+in memory at a time.
+
+Another advantage of Iterators is that they're homogeneous.  This is
+useful for uncoupling library code from application code.  Suppose you
+have a library function that grabs data from a filehandle:
+
+    sub my_lib_func
+    {
+        my $fh = shift;
+        ...
+
+If you need C<my_lib_func> to get its data from a different source,
+you must either modify it, or make a new copy of it that gets its
+input differently, or you must jump through hoops to make the new
+input stream look like a Perl filehandle.
+
+On the other hand, if C<my_lib_func> accepts an iterator, then you
+can pass it data from a filehandle:
+
+    my $data = ifile "my_input.txt";
+    $result = my_lib_func($data);
+
+Or a database handle:
+
+    my $data = imap {$_->{IMPORTANT_COLUMN}}
+               idb_rows($dbh, 'select IMPORTANT_COLUMN from foo');
+    $result = my_lib_func($data);
+
+If you later decide you need to transform the data, or process only
+every 10th data row, or whatever:
+
+    $result = my_lib_func(imap {magic($_)} $data);
+    $result = my_lib_func(inth 10, $data);
+
+The library function doesn't care.  All it needs is an iterator.
+
+Chapter 4 of Dominus's book (See L</"SEE ALSO">) covers this topic in
+some detail.
+
+=head2 Word of Warning
+
+When you use an iterator in separate parts of your program, or as an
+argument to the various iterator functions, you do I<not> get a copy
+of the iterators stream.
+
+In other words, if you grab a value from an iterator, then some other
+part of the program grabs a value from the same iterator, you will be
+getting different values.
+
+This can be confusing if you're not expecting it.  For example:
+
+    my $it_one = Iterator->new ({something});
+    my $it_two = some_iterator_transformation $it_one;
+    my $value  = $it_two->value();
+    my $whoops = $it_one->value;
+
+Here, C<some_iterator_transformation> takes an iterator as an
+argument, and returns an iterator as a result.  When a value is
+fetched from C<$it_two>, it internally grabs a value from C<$it_one>
+(and presumably transforms it somehow).  If you then grab a value from
+C<$it_one>, you'll get it's I<second> value (or third, or whatever,
+depending on how many values C<$it_two> grabbed), not the first.
+
+=head1 TUTORIAL
+
+Let's create a date iterator.  It'll take a L<DateTime> object as a
+starting date, and return successive days -- that is, it'll add 1 day
+each iteration.  It would be used as follows:
+
+ use DateTime;
+
+ $iter = I<(...something...);>
+ $day1 = $iter->value;           # Initial date
+ $day2 = $iter->value;           # One day later
+ $day3 = $iter->value;           # Two days later
+
+The easiest way to create such an iterator is by using a I<closure>.
+If you're not familiar with the concept, it's fairly simple: In Perl,
+the code within an I<anonymous block> has access to all the I<lexical
+variables> that were in scope at the time the block was created.
+After the program then leaves that lexical scope, those lexical
+variables remain accessible by that code block for as long as it
+exists.
+
+This makes it very easy to create iterators that maintain their own
+state.  Here we'll create a lexical scope by using a pair of braces:
+
+ my $iter;
+ {
+    my $dt = DateTime->now();
+    $iter = Iterator->new( sub
+    {
+        my $return_value = $dt->clone;
+        $dt->add(days => 1);
+        return $return_value;
+    });
+}
+
+Because C<$dt> is lexically scoped to the outermost block, it is not
+addressable from any code elsewhere in the program.  But the anonymous
+block within the C<new> method's parentheses I<can> see C<$dt>.  So
+C<$dt> does not get garbage collected as long as C<$iter> contains a
+reference to it.
+
+The code within the anonymous block is simple.  A copy of the current
+C<$dt> is made, one day is added to C<$dt>, and the copy is returned.
+
+You'll probably want to encapsulate the above block in a subroutine,
+so that you could call it from anywhere in your program:
+
+ sub date_iterator
+ {
+     my $dt = DateTime->now();
+     return Iterator->new( sub
+     {
+         my $return_value = $dt->clone;
+         $dt->add(days => 1);
+         return $return_value;
+     });
+ }
+
+If you look at the source code in L<Iterator::Util>, you'll see that
+just about all of the functions that create iterators look very
+similar to the above C<date_iterator> function.
+
+Of course, you'd probably want to be able to pass arguments to
+C<date_iterator>, say a starting date, maybe an increment other than
+"1 day".  But the basic idea is the same.
+
+The above date iterator is an infinite (well, unbounded) iterator.
+Let's look at how to indicate that your iterator has reached the end
+of its sequence of values.  Let's write a scaled-down version of
+L<irange|Iterator::Util/irange> from the Iterator::Util module -- one
+that takes a start value and an end value and always increments by 1.
+
+ sub irange_limited
+ {
+     my ($start, $end) = @_;
+
+     return Iterator->new (sub
+     {
+         Iterator::is_done
+             if $start > $end;
+
+         return $start++;
+     });
+ }
+
+The iterator itself is very simple (this sort of thing gets to be easy
+once you get the hang of it).  The new element here is the signalling
+that the sequence has ended, and the iterator's work is done.
+C<is_done> is how your code indicates this to the Iterator object.
+
+You may also want to throw an exception if the user specified bad input
+parameters.  There are a couple ways you can do this.
+
+     ...
+     die "Too few parameters to irange_limited"  if @_ < 2;
+     die "Too many parameters to irange_limited" if @_ > 2;
+     my ($start, $end) = @_;
+     ...
+
+This is the simplest way; you just use C<die> (or C<croak>).  You may
+choose to throw an Iterator parameter error, though; this will make
+your function work more like one of Iterator.pm's built in functions:
+
+     ...
+     Iterator::X::Parameter_Error->throw(
+         "Too few parameters to irange_limited")
+         if @_ < 2;
+     Iterator::X::Parameter_Error->throw(
+         "Too many parameters to irange_limited")
+         if @_ > 2;
+     my ($start, $end) = @_;
+     ...
+
+
+=head1 EXPORTS
+
+No symbols are exported to the caller's namespace.
+
+=head1 DIAGNOSTICS
+
+Iterator uses L<Exception::Class> objects for throwing exceptions.
+If you're not familiar with Exception::Class, don't worry; these
+exception objects work just like C<$@> does with C<die> and C<croak>,
+but they are easier to work with if you are trapping errors.
+
+All exceptions thrown by Iterator have a base class of Iterator::X.
+You can trap errors with an eval block:
+
+ eval { $foo = $iterator->value(); };
+
+and then check for errors as follows:
+
+ if (Iterator::X->caught())  {...
+
+You can look for more specific errors by looking at a more specific
+class:
+
+ if (Iterator::X::Exhausted->caught())  {...
+
+Some exceptions may provide further information, which may be useful
+for your exception handling:
+
+ if (my $ex = Iterator::X::User_Code_Error->caught())
+ {
+     my $exception = $ex->eval_error();
+     ...
+
+If you choose not to (or cannot) handle a particular type of exception
+(for example, there's not much to be done about a parameter error),
+you should rethrow the error:
+
+ if (my $ex = Iterator::X->caught())
+ {
+     if ($ex->isa('Iterator::X::Something_Useful'))
+     {
+         ...
+     }
+     else
+     {
+         $ex->rethrow();
+     }
+ }
+
+=over 4
+
+=item * Parameter Errors
+
+Class: C<Iterator::X::Parameter_Error>
+
+You called an Iterator method with one or more bad parameters.  Since
+this is almost certainly a coding error, there is probably not much
+use in handling this sort of exception.
+
+As a string, this exception provides a human-readable message about
+what the problem was.
+
+=item * Exhausted Iterators
+
+Class: C<Iterator::X::Exhausted>
+
+You called C<value> on an iterator that is exhausted; that is, there
+are no more values in the sequence to return.
+
+As a string, this exception is "Iterator is exhausted."
+
+=item * End of Sequence
+
+Class: C<Iterator::X::Am_Now_Exhausted>
+
+This exception is not thrown directly by any Iterator.pm methods, but
+is to be thrown by iterator sequence generation code; that is, the
+code that you pass to the L</new> constructor.  Your code won't catch
+an C<Am_Now_Exhausted> exception, because the Iterator object will
+catch it internally and set its L</is_exhausted> flag.
+
+The simplest way to throw this exception is to use the L</is_done>
+function:
+
+ Iterator::is_done() if $something;
+
+=item * User Code Exceptions
+
+Class: C<Iterator::X::User_Code_Error>
+
+This exception is thrown when the sequence generation code throws any
+sort of error besides C<Am_Now_Exhausted>.  This could be because your
+code explicitly threw an error (that is, C<die>d), or because it
+otherwise encountered an exception (any runtime error).
+
+This exception has one method, C<eval_error>, which returns the
+original C<$@> that was trapped by the Iterator object.  This may be a
+string or an object, depending on how C<die> was invoked.
+
+As a string, this exception evaluates to the stringified C<$@>.
+
+=item * I/O Errors
+
+Class: C<Iterator::X::IO_Error>
+
+This exception is thrown when any sort of I/O error occurs; this
+only happens with the filesystem iterators.
+
+This exception has one method, C<os_error>, which returns the original
+C<$!> that was trapped by the Iterator object.
+
+As a string, this exception provides some human-readable information
+along with C<$!>.
+
+=item * Internal Errors
+
+Class: C<Iterator::X::Internal_Error>
+
+Something happened that I thought couldn't possibly happen.  I would
+appreciate it if you could send me an email message detailing the
+circumstances of the error.
+
+=back
+
+=head1 REQUIREMENTS
+
+Requires the following additional module:
+
+L<Exception::Class>, v1.21 or later.
+
+=head1 SEE ALSO
+
+=over 4
+
+=item *
+
+I<Higher Order Perl>, Mark Jason Dominus, Morgan Kauffman 2005.
+
+ L<http://perl.plover.com/hop/>
+
+=item *
+
+The L<Iterator::Util> module, for general-purpose iterator functions.
+
+=item *
+
+The L<Iterator::IO> module, for filesystem and stream iterators.
+
+=item *
+
+The L<Iterator::DBI> module, for iterating over a DBI record set.
+
+=item *
+
+The L<Iterator::Misc> module, for various oddball iterator functions.
+
+=back
+
+=head1 THANKS
+
+Much thanks to Will Coleda and Paul Lalli (and the RPI lily crowd in
+general) for suggestions for the pre-release version.
+
+=head1 AUTHOR / COPYRIGHT
+
+Eric J. Roode, roode@cpan.org
+
+Copyright (c) 2005 by Eric J. Roode.  All Rights Reserved.
+This module is free software; you can redistribute it and/or modify it
+under the same terms as Perl itself.
+
+To avoid my spam filter, please include "Perl", "module", or this
+module's name in the message's subject line, and/or GPG-sign your
+message.
+
+If you have suggestions for improvement, please drop me a line.  If
+you make improvements to this software, I ask that you please send me
+a copy of your changes. Thanks.
+
+=cut
+
+=begin gpg
+
+-----BEGIN PGP SIGNATURE-----
+Version: GnuPG v1.4.1 (Cygwin)
+
+iD8DBQFDBLsnY96i4h5M0egRAh4YAJ9coQndsC91YtP+rWL6+8gT7khWBwCfUuMW
+8Uz8Qxwct24+ySbF/3fT4Cc=
+=VyYe
+-----END PGP SIGNATURE-----
+
+=end gpg
