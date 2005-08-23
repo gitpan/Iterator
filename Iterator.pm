@@ -8,14 +8,14 @@ Iterator - A general-purpose iterator class.
 
 =head1 VERSION
 
-This documentation describes version 0.01 of Iterator.pm, August 18, 2005.
+This documentation describes version 0.02 of Iterator.pm, August 23, 2005.
 
 =cut
 
 use strict;
 use warnings;
 package Iterator;
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 # Declare exception classes
 use Exception::Class
@@ -28,6 +28,12 @@ use Exception::Class
     {
         isa         => 'Iterator::X',
         description => 'Iterator method parameter error',
+    },
+    'Iterator::X::OptionError' =>
+    {
+      isa         => 'Iterator::X',
+      fields      => 'name',
+      description => 'A bad option was passed to an iterator method or function',
     },
     'Iterator::X::Exhausted' =>
     {
@@ -314,17 +320,18 @@ one line at a time, and reading the entire file into an array of lines
 before operating on it.
 
 Iterator.pm provides a class that simplifies creation and use of these
-iterator objects.  Other IteratorC<::> modules (see L</"SEE ALSO">)
+iterator objects.  Other C<Iterator::> modules (see L</"SEE ALSO">)
 provide many general-purpose and special-purpose iterator functions.
 
 Some iterators are infinite (that is, they generate infinite
 sequences), and some are finite.  When the end of a finite sequence is
 reached, the iterator code block should throw an exception of the type
-C<Iterator::X::Am_Now_Exhausted>.  This will signal the Iterator class
-to mark the object as exhausted.  The L</is_exhausted> method will
-then return true, and the C<isnt_exhausted> method will return false.
-Any further calls to the C<value> method will throw an exception of
-the type C<Iterator::X::Exhausted>.  See L</DIAGNOSTICS>.
+C<Iterator::X::Am_Now_Exhausted>; this is usually done via the
+L</is_done> function..  This will signal the Iterator class to mark
+the object as exhausted.  The L</is_exhausted> method will then return
+true, and the L</isnt_exhausted> method will return false.  Any
+further calls to the L</value> method will throw an exception of the
+type C<Iterator::X::Exhausted>.  See L</DIAGNOSTICS>.
 
 Note that in many, many cases, you will not need to explicitly create
 an iterator; there are plenty of iterator generation and manipulation
@@ -340,7 +347,7 @@ together like building blocks.
  $iter = Iterator->new( sub { code } );
 
 Creates a new iterator object.  The code block that you provide will
-be invoked by the C<value> method.  The code block should have some
+be invoked by the L</value> method.  The code block should have some
 way of maintaining state, so that it knows how to return the next
 value of the sequence each time it is called.
 
@@ -359,15 +366,19 @@ function for it:
  $next_value = $iter->value ();
 
 Returns the next value in the iterator's sequence.  If C<value> is
-called on an exhausted iterator, an Iterator::X::Exhausted exception
-is thrown.
+called on an exhausted iterator, an C<Iterator::X::Exhausted>
+exception is thrown.
+
+Note that these iterators can only return scalar values.  If you need
+your iterator to return a list or hash, it will have to return an
+arrayref or hashref.
 
 =item is_exhausted
 
  $bool = $iter->is_exhausted ();
 
 Returns true if the iterator is exhausted.  In this state, any call
-to the iterator's L<value> method will throw an exception.
+to the iterator's L</value> method will throw an exception.
 
 =item isnt_exhausted
 
@@ -489,7 +500,7 @@ some detail.
 
 When you use an iterator in separate parts of your program, or as an
 argument to the various iterator functions, you do I<not> get a copy
-of the iterators stream.
+of the iterator's stream of values.
 
 In other words, if you grab a value from an iterator, then some other
 part of the program grabs a value from the same iterator, you will be
@@ -506,7 +517,7 @@ Here, C<some_iterator_transformation> takes an iterator as an
 argument, and returns an iterator as a result.  When a value is
 fetched from C<$it_two>, it internally grabs a value from C<$it_one>
 (and presumably transforms it somehow).  If you then grab a value from
-C<$it_one>, you'll get it's I<second> value (or third, or whatever,
+C<$it_one>, you'll get its I<second> value (or third, or whatever,
 depending on how many values C<$it_two> grabbed), not the first.
 
 =head1 TUTORIAL
@@ -517,7 +528,7 @@ each iteration.  It would be used as follows:
 
  use DateTime;
 
- $iter = I<(...something...);>
+ $iter = (...something...);
  $day1 = $iter->value;           # Initial date
  $day2 = $iter->value;           # One day later
  $day3 = $iter->value;           # Two days later
@@ -546,8 +557,8 @@ state.  Here we'll create a lexical scope by using a pair of braces:
 
 Because C<$dt> is lexically scoped to the outermost block, it is not
 addressable from any code elsewhere in the program.  But the anonymous
-block within the C<new> method's parentheses I<can> see C<$dt>.  So
-C<$dt> does not get garbage collected as long as C<$iter> contains a
+block within the L</new> method's parentheses I<can> see C<$dt>.  So
+C<$dt> does not get garbage-collected as long as C<$iter> contains a
 reference to it.
 
 The code within the anonymous block is simple.  A copy of the current
@@ -597,7 +608,7 @@ that takes a start value and an end value and always increments by 1.
 The iterator itself is very simple (this sort of thing gets to be easy
 once you get the hang of it).  The new element here is the signalling
 that the sequence has ended, and the iterator's work is done.
-C<is_done> is how your code indicates this to the Iterator object.
+L</is_done> is how your code indicates this to the Iterator object.
 
 You may also want to throw an exception if the user specified bad input
 parameters.  There are a couple ways you can do this.
@@ -689,7 +700,7 @@ what the problem was.
 
 Class: C<Iterator::X::Exhausted>
 
-You called C<value> on an iterator that is exhausted; that is, there
+You called L</value> on an iterator that is exhausted; that is, there
 are no more values in the sequence to return.
 
 As a string, this exception is "Iterator is exhausted."
@@ -761,7 +772,7 @@ L<Exception::Class>, v1.21 or later.
 
 I<Higher Order Perl>, Mark Jason Dominus, Morgan Kauffman 2005.
 
- L<http://perl.plover.com/hop/>
+L<http://perl.plover.com/hop/>
 
 =item *
 
@@ -798,10 +809,6 @@ To avoid my spam filter, please include "Perl", "module", or this
 module's name in the message's subject line, and/or GPG-sign your
 message.
 
-If you have suggestions for improvement, please drop me a line.  If
-you make improvements to this software, I ask that you please send me
-a copy of your changes. Thanks.
-
 =cut
 
 =begin gpg
@@ -809,9 +816,9 @@ a copy of your changes. Thanks.
 -----BEGIN PGP SIGNATURE-----
 Version: GnuPG v1.4.1 (Cygwin)
 
-iD8DBQFDBLsnY96i4h5M0egRAh4YAJ9coQndsC91YtP+rWL6+8gT7khWBwCfUuMW
-8Uz8Qxwct24+ySbF/3fT4Cc=
-=VyYe
+iD8DBQFDC4XyY96i4h5M0egRAqNWAKDB9sEP95I6f5EeOatQmUXYMOCJuQCfW9XG
+h0HdYKNyw4LRbn7qCXR6XFY=
+=8xvD
 -----END PGP SIGNATURE-----
 
 =end gpg
