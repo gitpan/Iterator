@@ -8,14 +8,14 @@ Iterator - A general-purpose iterator class.
 
 =head1 VERSION
 
-This documentation describes version 0.02 of Iterator.pm, August 23, 2005.
+This documentation describes version 0.03 of Iterator.pm, October 10, 2005.
 
 =cut
 
 use strict;
 use warnings;
 package Iterator;
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 # Declare exception classes
 use Exception::Class
@@ -65,10 +65,18 @@ use Exception::Class
    );
 
 # Class method to help caller catch exceptions
-sub Exception::Class::Base::caught
+BEGIN
 {
-    my $class = shift;
-    return Exception::Class->caught($class);
+    # Dave Rolsky added this subroutine in v1.22 of Exception::Class.
+    # Thanks, Dave!
+    # We define it here so we have the functionality in pre-1.22 versions;
+    # we make it conditional so as to avoid a warning in post-1.22 versions.
+    *Exception::Class::Base::caught = sub
+    {
+        my $class = shift;
+        return Exception::Class->caught($class);
+    }
+        if $Exception::Class::VERSION lt '1.22';
 }
 
 # Croak-like location of error
@@ -816,9 +824,9 @@ message.
 -----BEGIN PGP SIGNATURE-----
 Version: GnuPG v1.4.1 (Cygwin)
 
-iD8DBQFDC4XyY96i4h5M0egRAqNWAKDB9sEP95I6f5EeOatQmUXYMOCJuQCfW9XG
-h0HdYKNyw4LRbn7qCXR6XFY=
-=8xvD
+iD8DBQFDSrnpY96i4h5M0egRAg65AJ9nP1ybUFl7GgpW9sZKOAEm3UF8MQCgul3g
+zElCa4hIQkHXtcAwYwiEPCY=
+=B5j0
 -----END PGP SIGNATURE-----
 
 =end gpg
